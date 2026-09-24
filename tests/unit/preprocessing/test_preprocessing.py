@@ -350,6 +350,9 @@ def test_jira_to_markdown_list_markers_are_not_emphasis(
         ("see {{RENDER_INVOICE_PDF_TO_TIFF}}", "see `RENDER_INVOICE_PDF_TO_TIFF`"),
         ("{noformat}\na_b_c _d_\n{noformat}", "```\n\na_b_c _d_\n\n```"),
         ("*bold* and a*b*c", "**bold** and a**b**c"),
+        ("call __init__ then __del__ later", "call __init__ then __del__ later"),
+        ("__main__ and _hi_", "__main__ and *hi*"),
+        ("foo__bar__baz", "foo__bar__baz"),
     ],
 )
 def test_jira_to_markdown_intraword_underscores_are_literal(
