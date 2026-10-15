@@ -606,33 +606,11 @@ class JiraPreprocessor(BasePreprocessor):
         output = "\n".join(convert_bold_italic_line(line) for line in lines)
         output = _restore_blocks(output, markdown_url_targets, "MARKDOWNURL")
 
-        # Multi-level bulleted list
-        def bulleted_list_fn(match: re.Match[str]) -> str:
-            ident = len(match.group(1)) if match.group(1) else 0
-            level = ident // 2 + 1
-            return str("*" * level + " " + match.group(2))
-
-        output = re.sub(
-            r"^(\s+)?[-+*] (.*)$",
-            bulleted_list_fn,
-            output,
-            flags=re.MULTILINE,
-        )
-
-        # Multi-level numbered list
-        def numbered_list_fn(
-            match: re.Match[str],
-        ) -> str:
-            ident = len(match.group(1)) if match.group(1) else 0
-            level = ident // 2 + 1
-            return str("#" * level + " " + match.group(2))
-
-        output = re.sub(
-            r"^(\s+)?\d+\. (.*)$",
-            numbered_list_fn,
-            output,
-            flags=re.MULTILINE,
-        )
+        # Multi-level lists. Jira writes nesting as the whole chain of parent
+        # markers ("#*" is a bullet under a numbered item), so a nested item's
+        # prefix comes from a stack of the enclosing list types, not from its
+        # indentation alone; "**" under "#" would end the numbered list.
+        output = _convert_markdown_lists_to_jira(output)
 
         # HTML formatting tags to Jira markup
         tag_map = {
@@ -736,3 +714,31 @@ class JiraPreprocessor(BasePreprocessor):
         prefix = "1." if last_char == "#" else "-"
 
         return f"{indent}{prefix} {content}"
+
+
+_MD_LIST_ITEM = re.compile(r"^(\s*)([-+*]|\d+\.) (.*)$")
+
+
+def _convert_markdown_lists_to_jira(text: str) -> str:
+    """Markdown bullet/numbered lists (any nesting, mixed types) to Jira markers."""
+    out: list[str] = []
+    stack: list[tuple[int, str]] = []  # (indent, "*" or "#")
+    for line in text.split("\n"):
+        m = _MD_LIST_ITEM.match(line)
+        if not m:
+            # Prose at the left margin ends every open list; indented lines
+            # are continuations of the current item.
+            if line.strip() and not line[:1].isspace():
+                stack = []
+            out.append(line)
+            continue
+        indent = len(m.group(1).expandtabs(4))
+        marker = "#" if m.group(2)[0].isdigit() else "*"
+        while stack and stack[-1][0] > indent:
+            stack.pop()
+        if stack and stack[-1][0] == indent:
+            stack[-1] = (indent, marker)
+        else:
+            stack.append((indent, marker))
+        out.append("".join(t for _, t in stack) + " " + m.group(3))
+    return "\n".join(out)
