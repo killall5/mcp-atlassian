@@ -283,6 +283,17 @@ class JiraPreprocessor(BasePreprocessor):
             "INLINECODE",
         )
 
+        # Server/DC user mentions ([~username]) have no Markdown form; keep them
+        # verbatim so the subscript rule (~text~) cannot pair two of them up.
+        mentions: list[str] = []
+        output = _extract_blocks(
+            output,
+            r"\[~[^\]\s|]+\]",
+            lambda m: m.group(0),
+            mentions,
+            "MENTION",
+        )
+
         # Block quotes
         output = re.sub(r"^bq\.(.*?)$", r"> \1\n", output, flags=re.MULTILINE)
 
@@ -358,19 +369,29 @@ class JiraPreprocessor(BasePreprocessor):
             flags=re.MULTILINE,
         )
 
+        # Images: only a target that names an image file or a URL. Prose with
+        # two exclamation marks (GitLab MR refs like "!101 ... !111" inside link
+        # text) is not an image and must not swallow the text between them.
+        image_target = (
+            r"(https?://[^|\n\s!]+|[^|\n\s!]+\."
+            r"(?:png|jpe?g|gif|bmp|svg|webp|tiff?|ico))"
+        )
+
         # Images with alt text
         output = re.sub(
-            r"!([^|\n\s]+)\|([^\n!]*)alt=([^\n!\,]+?)"
-            r"(,([^\n!]*))?!",
+            rf"!{image_target}\|([^\n!]*)alt=([^\n!\,]+?)(,([^\n!]*))?!",
             r"![\3](\1)",
             output,
+            flags=re.IGNORECASE,
         )
 
         # Images with other parameters (ignore them)
-        output = re.sub(r"!([^|\n\s]+)\|([^\n!]*)!", r"![](\1)", output)
+        output = re.sub(
+            rf"!{image_target}\|([^\n!]*)!", r"![](\1)", output, flags=re.IGNORECASE
+        )
 
         # Images without parameters
-        output = re.sub(r"!([^\n\s!]+)!", r"![](\1)", output)
+        output = re.sub(rf"!{image_target}!", r"![](\1)", output, flags=re.IGNORECASE)
 
         # Links
         output = re.sub(r"\[([^|]+)\|(.+?)\]", r"[\1](\2)", output)
@@ -416,9 +437,10 @@ class JiraPreprocessor(BasePreprocessor):
         # Rejoin the lines
         output = "\n".join(lines)
 
-        # Restore code/noformat blocks and inline code
+        # Restore code/noformat blocks, inline code and mentions
         output = _restore_blocks(output, code_blocks, "CODEBLOCK")
         output = _restore_blocks(output, inline_codes, "INLINECODE")
+        output = _restore_blocks(output, mentions, "MENTION")
 
         return output
 

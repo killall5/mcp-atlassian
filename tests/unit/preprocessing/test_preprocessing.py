@@ -1911,3 +1911,36 @@ class TestHtmlConversionCodeProtection:
         """Direct test of _convert_html_to_markdown with markdown code spans."""
         result = preprocessor._convert_html_to_markdown(md_input)
         assert expected_substr in result, f"Expected '{expected_substr}' in: {result!r}"
+
+
+def test_jira_to_markdown_bang_refs_in_link_text_are_not_images(
+    preprocessor_with_jira,
+):
+    """GitLab-style MR refs (!101 ... !111) are prose, not an image target."""
+    back = "https://git.example.com/group/back/-/merge_requests/101"
+    ios = "https://git.example.com/group/ios/-/merge_requests/111"
+    text = f"Related: [group/back !101|{back}], [group/ios !111|{ios}]"
+    assert preprocessor_with_jira.jira_to_markdown(text) == (
+        f"Related: [group/back !101]({back}), [group/ios !111]({ios})"
+    )
+
+
+def test_jira_to_markdown_images_still_convert(preprocessor_with_jira):
+    text = (
+        "see !screen.png! and !https://img.example.com/a.png|width=300! "
+        "and !diagram.PNG|alt=flow!"
+    )
+    assert preprocessor_with_jira.jira_to_markdown(text) == (
+        "see ![](screen.png) and ![](https://img.example.com/a.png) "
+        "and ![flow](diagram.PNG)"
+    )
+
+
+def test_jira_to_markdown_keeps_server_mentions(preprocessor_with_jira):
+    """Two [~user] mentions must not pair up as ~subscript~."""
+    text = "[~alice] notes for [~bob] (2026-08-31)"
+    assert preprocessor_with_jira.jira_to_markdown(text) == text
+
+
+def test_jira_to_markdown_subscript_still_converts(preprocessor_with_jira):
+    assert preprocessor_with_jira.jira_to_markdown("H~2~O") == "H<sub>2</sub>O"
