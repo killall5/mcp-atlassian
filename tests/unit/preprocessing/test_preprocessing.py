@@ -1944,3 +1944,33 @@ def test_jira_to_markdown_keeps_server_mentions(preprocessor_with_jira):
 
 def test_jira_to_markdown_subscript_still_converts(preprocessor_with_jira):
     assert preprocessor_with_jira.jira_to_markdown("H~2~O") == "H<sub>2</sub>O"
+
+
+def test_markdown_to_jira_mixed_nested_lists_keep_parent_markers(
+    preprocessor_with_jira,
+):
+    """A bullet under a numbered item is "#*"; "**" would end the numbered list."""
+    md = (
+        "Intro.\n\n"
+        "1. First question?\n"
+        "   - Now: a fact.\n"
+        "   - Why: a choice.\n"
+        "2. Second question?\n"
+        "   - Now: unknown.\n\n"
+        "- a\n"
+        "  - b\n"
+        "    1. c\n"
+        "- d"
+    )
+    assert preprocessor_with_jira.markdown_to_jira(md) == (
+        "Intro.\n\n"
+        "# First question?\n"
+        "#* Now: a fact.\n"
+        "#* Why: a choice.\n"
+        "# Second question?\n"
+        "#* Now: unknown.\n\n"
+        "* a\n"
+        "** b\n"
+        "**# c\n"
+        "* d"
+    )
