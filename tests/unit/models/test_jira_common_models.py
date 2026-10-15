@@ -288,7 +288,7 @@ class TestJiraIssueType:
         assert simplified["name"] == "Task"
         assert "id" not in simplified
         assert "description" not in simplified
-        assert "icon_url" not in simplified
+        assert simplified["icon_url"] == "https://example.com/task-icon.png"
 
 
 class TestJiraPriority:

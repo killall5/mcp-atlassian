@@ -240,7 +240,10 @@ class JiraIssueType(ApiModel):
 
     def to_simplified_dict(self) -> dict[str, Any]:
         """Convert to simplified dictionary for API response."""
-        return {"name": self.name}
+        result: dict[str, Any] = {"name": self.name}
+        if self.icon_url:
+            result["icon_url"] = self.icon_url
+        return result
 
 
 class JiraPriority(ApiModel):
