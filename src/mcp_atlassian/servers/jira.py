@@ -683,10 +683,10 @@ async def get_issue(
     comment_limit: Annotated[
         int,
         Field(
-            description="Maximum number of comments to include (0 or null for no comments)",
+            description="Maximum number of comments to include, newest kept (0 for no comments)",
             default=10,
             ge=0,
-            le=100,
+            le=1000,
         ),
     ] = 10,
     properties: Annotated[
