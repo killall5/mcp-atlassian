@@ -1008,6 +1008,11 @@ def test_markdown_to_jira_underscore_in_inline_code_untouched(preprocessor_with_
         ("`x~y~z`", r"{{x\~y\~z}}"),
         ("`2^10^`", r"{{2\^10\^}}"),
         ("`a+b+c`", r"{{a\+b\+c}}"),
+        # a strikethrough opened in one span closed on a hyphen in the next
+        (
+            "`--delete --max-delete=2000` (`x.sh.bak-PTV-3500`)",
+            r"{{\-\-delete \-\-max\-delete=2000}} ({{x.sh.bak\-PTV\-3500}})",
+        ),
         # a lone intraword underscore is literal for Jira and stays as is
         ("`find_provider_by_url`", "{{find_provider_by_url}}"),
     ],
@@ -1023,6 +1028,7 @@ def test_markdown_to_jira_escapes_effects_in_inline_code(
     [
         "MV `etl.tracking__peerstv__transform__2` and `__3`",
         "`_private` `a*b*c` `x~y~z` `2^10^` `a+b+c` `find_provider_by_url`",
+        "`--delete --max-delete=2000` (`x.sh.bak-PTV-3500`)",
     ],
 )
 def test_inline_code_effects_round_trip(preprocessor_with_jira, markdown):
