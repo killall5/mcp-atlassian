@@ -995,6 +995,59 @@ def test_markdown_to_jira_underscore_in_inline_code_untouched(preprocessor_with_
     )
 
 
+@pytest.mark.parametrize(
+    ("markdown", "jira"),
+    [
+        # Jira applies text effects inside {{...}}: `__x__` would italicize.
+        (
+            "MV `etl.tracking__peerstv__transform__2` and `__3`",
+            r"MV {{etl.tracking\_\_peerstv\_\_transform\_\_2}} and {{\_\_3}}",
+        ),
+        ("`_private`", r"{{\_private}}"),
+        ("`a*b*c`", r"{{a\*b\*c}}"),
+        ("`x~y~z`", r"{{x\~y\~z}}"),
+        ("`2^10^`", r"{{2\^10\^}}"),
+        ("`a+b+c`", r"{{a\+b\+c}}"),
+        # a lone intraword underscore is literal for Jira and stays as is
+        ("`find_provider_by_url`", "{{find_provider_by_url}}"),
+    ],
+)
+def test_markdown_to_jira_escapes_effects_in_inline_code(
+    preprocessor_with_jira, markdown, jira
+):
+    assert preprocessor_with_jira.markdown_to_jira(markdown) == jira
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "MV `etl.tracking__peerstv__transform__2` and `__3`",
+        "`_private` `a*b*c` `x~y~z` `2^10^` `a+b+c` `find_provider_by_url`",
+    ],
+)
+def test_inline_code_effects_round_trip(preprocessor_with_jira, markdown):
+    jira = preprocessor_with_jira.markdown_to_jira(markdown)
+    assert preprocessor_with_jira.jira_to_markdown(jira) == markdown
+
+
+def test_markdown_to_jira_escapes_lone_tildes(preprocessor_with_jira):
+    """A lone `~` is the Jira subscript delimiter; prose tildes are literal."""
+    assert (
+        preprocessor_with_jira.markdown_to_jira("~0.7 TiB and ~71k rows")
+        == r"\~0.7 TiB and \~71k rows"
+    )
+    assert preprocessor_with_jira.markdown_to_jira("~~gone~~") == "-gone-"
+    assert preprocessor_with_jira.markdown_to_jira("ping [~jdoe]") == "ping [~jdoe]"
+
+
+def test_jira_to_markdown_escaped_tildes_are_not_subscript(preprocessor_with_jira):
+    assert (
+        preprocessor_with_jira.jira_to_markdown(r"\~0.7 TiB and \~71k rows")
+        == r"\~0.7 TiB and \~71k rows"
+    )
+    assert preprocessor_with_jira.jira_to_markdown("H~2~O") == "H<sub>2</sub>O"
+
+
 def test_markdown_to_jira_preserves_underscores_in_url_targets(
     preprocessor_with_jira,
 ):

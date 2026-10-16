@@ -24,6 +24,28 @@ def _convert_panel(params: str | None, content: str) -> str:
     return f"\n{content}\n"
 
 
+def _escape_jira_monospace(code: str) -> str:
+    """Escape wiki markup that Jira still applies inside ``{{monospace}}``.
+
+    Jira renders text effects inside ``{{...}}``, so ``etl.tracking__peerstv__x``
+    turns ``_peerstv_`` into italics. A lone underscore between word characters
+    (``snake_case``) is literal for the Jira renderer and stays as is; runs of
+    underscores and underscores at a word edge are escaped, as are the other
+    paired effect markers ``* ~ ^ +``.
+    """
+    code = re.sub(
+        r"_{2,}|(?<![^\W_])_|_(?![^\W_])",
+        lambda m: r"\_" * len(m.group(0)),
+        code,
+    )
+    return re.sub(r"([*~^+])", r"\\\1", code)
+
+
+def _unescape_jira_monospace(code: str) -> str:
+    """Reverse ``_escape_jira_monospace`` when reading ``{{...}}`` back."""
+    return re.sub(r"\\([_*~^+])", r"\1", code)
+
+
 def _contains_html_outside_code(text: str) -> bool:
     """Return whether source text contains HTML outside protected code spans."""
     code_patterns = (
@@ -278,7 +300,7 @@ class JiraPreprocessor(BasePreprocessor):
         output = _extract_blocks(
             output,
             r"\{\{([^}]+)\}\}",
-            lambda m: f"`{m.group(1)}`",
+            lambda m: f"`{_unescape_jira_monospace(m.group(1))}`",
             inline_codes,
             "INLINECODE",
         )
@@ -345,8 +367,9 @@ class JiraPreprocessor(BasePreprocessor):
         # Superscript
         output = re.sub(r"\^([^^]*)\^", r"<sup>\1</sup>", output)
 
-        # Subscript
-        output = re.sub(r"~([^~]*)~", r"<sub>\1</sub>", output)
+        # Subscript. An escaped `\~` (written by markdown_to_jira for a literal
+        # tilde) is text, not a delimiter.
+        output = re.sub(r"(?<!\\)~([^~]*?)(?<!\\)~", r"<sub>\1</sub>", output)
 
         # Strikethrough
         output = re.sub(r"-([^-]*)-", r"-\1-", output)
@@ -504,7 +527,7 @@ class JiraPreprocessor(BasePreprocessor):
         def _md_inline_to_jira(
             match: re.Match[str],
         ) -> str:
-            return "{{" + match.group(1) + "}}"
+            return "{{" + _escape_jira_monospace(match.group(1)) + "}}"
 
         # Extract code blocks and inline code before
         # any other transformations.
@@ -590,6 +613,11 @@ class JiraPreprocessor(BasePreprocessor):
                 escape_intraword_underscore_runs,
                 line,
             )
+            # A single `~` is the Jira subscript delimiter, so prose such as
+            # "~0.7 TiB and ~71k" renders 0.7…71 as subscript. Escape lone
+            # tildes; `~~strike~~` (converted below) and `[~user]` mentions
+            # keep theirs.
+            line = re.sub(r"(?<![\[~\\])~(?!~)", r"\\~", line)
             if re.match(r"^[*_]+\s", line):
                 return line
             return re.sub(
