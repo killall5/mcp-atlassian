@@ -34,18 +34,20 @@ def _escape_jira_monospace(code: str) -> str:
     paired effect markers ``* ~ ^ + -``. Every hyphen is escaped: a strikethrough
     can open in one span and close on an intraword hyphen in the next, so
     ``{{--delete}} ... {{x.bak-PTV-1}}`` struck out everything in between.
+    Braces are escaped too: ``{{users.d/{a,b}.xml}}`` ends the span at the
+    first ``}}`` and Jira shows the raw markup.
     """
     code = re.sub(
         r"_{2,}|(?<![^\W_])_|_(?![^\W_])",
         lambda m: r"\_" * len(m.group(0)),
         code,
     )
-    return re.sub(r"([*~^+-])", r"\\\1", code)
+    return re.sub(r"([*~^+{}-])", r"\\\1", code)
 
 
 def _unescape_jira_monospace(code: str) -> str:
     """Reverse ``_escape_jira_monospace`` when reading ``{{...}}`` back."""
-    return re.sub(r"\\([_*~^+-])", r"\1", code)
+    return re.sub(r"\\([_*~^+{}-])", r"\1", code)
 
 
 def _contains_html_outside_code(text: str) -> bool:
@@ -301,7 +303,7 @@ class JiraPreprocessor(BasePreprocessor):
         )
         output = _extract_blocks(
             output,
-            r"\{\{([^}]+)\}\}",
+            r"\{\{((?:\\[{}]|[^}])+)\}\}",
             lambda m: f"`{_unescape_jira_monospace(m.group(1))}`",
             inline_codes,
             "INLINECODE",
