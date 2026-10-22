@@ -2038,3 +2038,26 @@ def test_markdown_to_jira_mixed_nested_lists_keep_parent_markers(
         "**# c\n"
         "* d"
     )
+
+
+def test_jira_to_markdown_keeps_attachment_refs(preprocessor_with_jira):
+    """Two [^attachment] references must not pair up as ^superscript^."""
+    text = (
+        "[^Баги от 22.10.2026.docx]\n\n"
+        "Логи [^realme-RMX3941-Android-15_2026-10-22_095046.logcat]"
+    )
+    assert preprocessor_with_jira.jira_to_markdown(text) == text
+
+
+def test_jira_to_markdown_keeps_single_attachment_ref(preprocessor_with_jira):
+    text = "see [^file.docx]"
+    assert preprocessor_with_jira.jira_to_markdown(text) == text
+
+
+def test_jira_to_markdown_superscript_still_converts(preprocessor_with_jira):
+    assert preprocessor_with_jira.jira_to_markdown("x^2^") == "x<sup>2</sup>"
+
+
+def test_jira_to_markdown_superscript_does_not_span_lines(preprocessor_with_jira):
+    text = "a^b\nc^d"
+    assert preprocessor_with_jira.jira_to_markdown(text) == text
