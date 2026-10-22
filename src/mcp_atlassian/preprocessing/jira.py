@@ -368,8 +368,9 @@ class JiraPreprocessor(BasePreprocessor):
         # (e.g. version numbers "3.13+"), not markup.
         output = re.sub(r"(?<!\w)\+([^+\n]+)\+(?!\w)", r"<ins>\1</ins>", output)
 
-        # Superscript
-        output = re.sub(r"\^([^^]*)\^", r"<sup>\1</sup>", output)
+        # Superscript. A caret right after `[` is an attachment reference
+        # (`[^file.docx]`), not a delimiter; `^text^` never spans a line.
+        output = re.sub(r"(?<!\[)\^([^^\n]*)(?<!\[)\^", r"<sup>\1</sup>", output)
 
         # Subscript. An escaped `\~` (written by markdown_to_jira for a literal
         # tilde) is text, not a delimiter.
