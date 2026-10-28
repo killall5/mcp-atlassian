@@ -177,6 +177,8 @@ class CommentsMixin(JiraClient):
             True if the issue is a JSM customer request, or if that could
             not be established. False only on a definite 404.
         """
+        if not self.config.is_cloud:
+            return self._is_server_customer_request(issue_key)
         try:
             response = self.jira.get(
                 f"rest/servicedeskapi/request/{issue_key}",
@@ -215,6 +217,62 @@ class CommentsMixin(JiraClient):
             "force."
         )
         return True
+
+    def _is_server_customer_request(self, issue_key: str) -> bool:
+        """Server/DC counterpart of the request probe in _is_servicedesk_request.
+
+        On Server/DC the ServiceDesk REST API answers 404 to a user without
+        a JSM agent license even for a real customer request, so a 404 there
+        proves nothing and reading it as "not a request" would post an
+        ordinary, customer-visible comment. Instead read the issue's
+        Customer Request Type field (``com.atlassian.servicedesk:vp-origin``)
+        through the core REST API: only an issue with a request type has a
+        portal view.
+
+        Fails closed: False only when the field exists and is empty on an
+        issue that was read successfully.
+        """
+        try:
+            field_id = getattr(self, "_request_type_field_id", None)
+            if field_id is None:
+                fields = self.jira.get("rest/api/2/field")
+                field_id = next(
+                    (
+                        f["id"]
+                        for f in fields or []
+                        if (f.get("schema") or {}).get("custom")
+                        == "com.atlassian.servicedesk:vp-origin"
+                    ),
+                    None,
+                )
+                if field_id is None:
+                    logger.warning(
+                        "No Customer Request Type field found; treating "
+                        f"{issue_key} as a customer request so the "
+                        "internal-only guard stays in force."
+                    )
+                    return True
+                self._request_type_field_id = field_id
+            issue = self.jira.get(
+                f"rest/api/2/issue/{issue_key}", params={"fields": field_id}
+            )
+            fields = issue.get("fields") if isinstance(issue, dict) else None
+            if not isinstance(fields, dict) or field_id not in fields:
+                raise TypeError(f"no {field_id} in the issue response")
+            if fields[field_id]:
+                return True
+            logger.info(
+                f"{issue_key} has no Customer Request Type, so it has no "
+                "portal audience; the internal-only guard does not apply."
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                f"Could not establish whether {issue_key} is a JSM customer "
+                f"request; treating it as one so the internal-only guard "
+                f"stays in force: {exc}"
+            )
+            return True
 
     def _enforce_internal_only_add(self, issue_key: str, public: bool | None) -> None:
         """Reject add_comment calls that would post client-visible content
@@ -276,6 +334,8 @@ class CommentsMixin(JiraClient):
                 does not exist). The guard fails closed: an edit that
                 cannot be verified is refused rather than allowed through.
         """
+        if not self.config.is_cloud:
+            return self._fetch_server_comment_is_public(issue_key, comment_id)
         try:
             url = f"rest/servicedeskapi/request/{issue_key}/comment/{comment_id}"
             headers = {
@@ -300,6 +360,49 @@ class CommentsMixin(JiraClient):
                 f"Could not verify the visibility of comment {comment_id} "
                 f"on {issue_key} via the ServiceDesk API (required because "
                 f"{issue_key} is in an internal-only project): {e}"
+            ) from e
+
+    def _fetch_server_comment_is_public(self, issue_key: str, comment_id: str) -> bool:
+        """Server/DC counterpart of _fetch_servicedesk_comment_is_public.
+
+        The ServiceDesk REST API on Server/DC only serves users holding a
+        JSM agent license, so a bot account in the project's Service Desk
+        Team role still gets 404 there. JSM keeps the internal flag in the
+        ``sd.public.comment`` comment property, which the core REST API
+        returns to anyone who can see the comment.
+
+        Returns:
+            False only if the property says ``{"internal": true}``. A
+            missing property is how JSM stores a public comment, and
+            anything else fails closed as public too.
+
+        Raises:
+            Exception: If the comment cannot be fetched.
+        """
+        try:
+            response = self.jira.get(
+                f"rest/api/2/issue/{issue_key}/comment/{comment_id}",
+                params={"expand": "properties"},
+            )
+            if not isinstance(response, dict):
+                msg = (
+                    "Unexpected return value type from Jira comment API: "
+                    f"{type(response)}"
+                )
+                logger.error(msg)
+                raise TypeError(msg)
+            for prop in response.get("properties") or []:
+                if prop.get("key") == "sd.public.comment":
+                    value = prop.get("value")
+                    return not (
+                        isinstance(value, dict) and value.get("internal") is True
+                    )
+            return True
+        except Exception as e:
+            raise Exception(
+                f"Could not verify the visibility of comment {comment_id} "
+                f"on {issue_key} via its sd.public.comment property (required "
+                f"because {issue_key} is in an internal-only project): {e}"
             ) from e
 
     def _enforce_internal_only_edit(self, issue_key: str, comment_id: str) -> None:
@@ -466,6 +569,8 @@ class CommentsMixin(JiraClient):
         Raises:
             Exception: If the issue is not a JSM issue or API fails
         """
+        if not self.config.is_cloud:
+            return self._add_server_jsm_comment(issue_key, comment, public)
         try:
             url = f"rest/servicedeskapi/request/{issue_key}/comment"
             data = {"body": comment, "public": public}
@@ -527,6 +632,83 @@ class CommentsMixin(JiraClient):
                 f"Error adding ServiceDesk comment to {issue_key}: "
                 f"{error_msg or type(e).__name__}"
             ) from e
+
+    def _add_server_jsm_comment(
+        self,
+        issue_key: str,
+        comment: str,
+        public: bool,
+    ) -> dict[str, Any]:
+        """Server/DC counterpart of _add_servicedesk_comment.
+
+        The ServiceDesk REST API on Server/DC only serves users holding a
+        JSM agent license (a bot in the Service Desk Team role still gets
+        404), so the comment is created through the core REST API with the
+        ``sd.public.comment`` property JSM uses for its internal flag. The
+        property is part of the create request, so the comment never
+        exists without it. Unlike the Cloud path, the body goes through
+        the usual markdown→wiki conversion.
+
+        Returns:
+            The created comment details
+
+        Raises:
+            Exception: If the API fails, or if Jira's answer does not
+                carry the requested internal flag (the comment may then
+                be customer-visible and must be checked by a human).
+        """
+        try:
+            response = self.jira.post(
+                f"rest/api/2/issue/{issue_key}/comment",
+                data={
+                    "body": self._markdown_to_jira(comment),
+                    "properties": [
+                        {
+                            "key": "sd.public.comment",
+                            "value": {"internal": not public},
+                        }
+                    ],
+                },
+                params={"expand": "properties"},
+            )
+        except Exception as e:
+            status = _http_status(e)
+            raise Exception(
+                f"Error adding ServiceDesk comment to {issue_key}"
+                f"{f' (HTTP {status})' if status else ''}: {e}"
+            ) from e
+        if not isinstance(response, dict):
+            msg = (
+                f"Unexpected return value type from Jira comment API: {type(response)}"
+            )
+            logger.error(msg)
+            raise TypeError(msg)
+
+        stored = next(
+            (
+                p.get("value")
+                for p in response.get("properties") or []
+                if p.get("key") == "sd.public.comment"
+            ),
+            None,
+        )
+        if not public and not (
+            isinstance(stored, dict) and stored.get("internal") is True
+        ):
+            raise Exception(
+                f"Comment {response.get('id')} on {issue_key} was created, but "
+                "Jira did not confirm the internal flag, so it may be "
+                "customer-visible. Check it in Jira."
+            )
+
+        body_raw = response.get("body", "")
+        return {
+            "id": str(response.get("id", "")),
+            "body": self._clean_text(body_raw or ""),
+            "created": str(parse_date(response.get("created"))),
+            "author": response.get("author", {}).get("displayName", "Unknown"),
+            "public": public,
+        }
 
     def edit_comment(
         self,
