@@ -138,6 +138,8 @@ class CommentsMixin(JiraClient):
                 does not exist). The guard fails closed: an edit that
                 cannot be verified is refused rather than allowed through.
         """
+        if not self.config.is_cloud:
+            return self._fetch_server_comment_is_public(issue_key, comment_id)
         try:
             url = f"rest/servicedeskapi/request/{issue_key}/comment/{comment_id}"
             headers = {
@@ -162,6 +164,49 @@ class CommentsMixin(JiraClient):
                 f"Could not verify the visibility of comment {comment_id} "
                 f"on {issue_key} via the ServiceDesk API (required because "
                 f"{issue_key} is in an internal-only project): {e}"
+            ) from e
+
+    def _fetch_server_comment_is_public(self, issue_key: str, comment_id: str) -> bool:
+        """Server/DC counterpart of _fetch_servicedesk_comment_is_public.
+
+        The ServiceDesk REST API on Server/DC only serves users holding a
+        JSM agent license, so a bot account in the project's Service Desk
+        Team role still gets 404 there. JSM keeps the internal flag in the
+        ``sd.public.comment`` comment property, which the core REST API
+        returns to anyone who can see the comment.
+
+        Returns:
+            False only if the property says ``{"internal": true}``. A
+            missing property is how JSM stores a public comment, and
+            anything else fails closed as public too.
+
+        Raises:
+            Exception: If the comment cannot be fetched.
+        """
+        try:
+            response = self.jira.get(
+                f"rest/api/2/issue/{issue_key}/comment/{comment_id}",
+                params={"expand": "properties"},
+            )
+            if not isinstance(response, dict):
+                msg = (
+                    "Unexpected return value type from Jira comment API: "
+                    f"{type(response)}"
+                )
+                logger.error(msg)
+                raise TypeError(msg)
+            for prop in response.get("properties") or []:
+                if prop.get("key") == "sd.public.comment":
+                    value = prop.get("value")
+                    return not (
+                        isinstance(value, dict) and value.get("internal") is True
+                    )
+            return True
+        except Exception as e:
+            raise Exception(
+                f"Could not verify the visibility of comment {comment_id} "
+                f"on {issue_key} via its sd.public.comment property (required "
+                f"because {issue_key} is in an internal-only project): {e}"
             ) from e
 
     def _enforce_internal_only_edit(self, issue_key: str, comment_id: str) -> None:
@@ -308,6 +353,8 @@ class CommentsMixin(JiraClient):
         Raises:
             Exception: If the issue is not a JSM issue or API fails
         """
+        if not self.config.is_cloud:
+            return self._add_server_jsm_comment(issue_key, comment, public)
         try:
             url = f"rest/servicedeskapi/request/{issue_key}/comment"
             data = {"body": comment, "public": public}
@@ -362,6 +409,83 @@ class CommentsMixin(JiraClient):
             raise Exception(
                 f"Error adding ServiceDesk comment to {issue_key}: {error_msg}"
             ) from e
+
+    def _add_server_jsm_comment(
+        self,
+        issue_key: str,
+        comment: str,
+        public: bool,
+    ) -> dict[str, Any]:
+        """Server/DC counterpart of _add_servicedesk_comment.
+
+        The ServiceDesk REST API on Server/DC only serves users holding a
+        JSM agent license (a bot in the Service Desk Team role still gets
+        404), so the comment is created through the core REST API with the
+        ``sd.public.comment`` property JSM uses for its internal flag. The
+        property is part of the create request, so the comment never
+        exists without it. Unlike the Cloud path, the body goes through
+        the usual markdown→wiki conversion.
+
+        Returns:
+            The created comment details
+
+        Raises:
+            Exception: If the API fails, or if Jira's answer does not
+                carry the requested internal flag (the comment may then
+                be customer-visible and must be checked by a human).
+        """
+        try:
+            response = self.jira.post(
+                f"rest/api/2/issue/{issue_key}/comment",
+                data={
+                    "body": self._markdown_to_jira(comment),
+                    "properties": [
+                        {
+                            "key": "sd.public.comment",
+                            "value": {"internal": not public},
+                        }
+                    ],
+                },
+                params={"expand": "properties"},
+            )
+        except Exception as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            raise Exception(
+                f"Error adding ServiceDesk comment to {issue_key}"
+                f"{f' (HTTP {status})' if status else ''}: {e}"
+            ) from e
+        if not isinstance(response, dict):
+            msg = (
+                f"Unexpected return value type from Jira comment API: {type(response)}"
+            )
+            logger.error(msg)
+            raise TypeError(msg)
+
+        stored = next(
+            (
+                p.get("value")
+                for p in response.get("properties") or []
+                if p.get("key") == "sd.public.comment"
+            ),
+            None,
+        )
+        if not public and not (
+            isinstance(stored, dict) and stored.get("internal") is True
+        ):
+            raise Exception(
+                f"Comment {response.get('id')} on {issue_key} was created, but "
+                "Jira did not confirm the internal flag, so it may be "
+                "customer-visible. Check it in Jira."
+            )
+
+        body_raw = response.get("body", "")
+        return {
+            "id": str(response.get("id", "")),
+            "body": self._clean_text(body_raw or ""),
+            "created": str(parse_date(response.get("created"))),
+            "author": response.get("author", {}).get("displayName", "Unknown"),
+            "public": public,
+        }
 
     def edit_comment(
         self,

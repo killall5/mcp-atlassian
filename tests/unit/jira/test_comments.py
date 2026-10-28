@@ -970,6 +970,125 @@ class TestInternalOnlyProjectsGuard:
             guarded_mixin.edit_comment("CC-1", "5", "Updated text")
 
 
+class TestServerInternalComments:
+    """On Server/DC the ServiceDesk REST API needs a JSM agent license, so
+    public/internal comments go through the core REST API with the
+    ``sd.public.comment`` property instead."""
+
+    INTERNAL_PROP = {"key": "sd.public.comment", "value": {"internal": True}}
+
+    @pytest.fixture
+    def server_mixin(self, jira_config_factory):
+        config = jira_config_factory(
+            url="https://jira.example.com",
+            internal_only_projects=frozenset({"CC"}),
+        )
+        mixin = CommentsMixin(config=config)
+        mixin.jira = Mock()
+        mixin.jira.default_headers = {}
+        mixin.preprocessor = Mock()
+        mixin.preprocessor.markdown_to_jira = Mock(return_value="*note*")
+        mixin._clean_text = Mock(side_effect=lambda x: x)
+        return mixin
+
+    def _created(self, properties):
+        return {
+            "id": "42",
+            "body": "*note*",
+            "created": "2024-01-01T10:00:00.000+0700",
+            "author": {"displayName": "Bot"},
+            "properties": properties,
+        }
+
+    def test_internal_comment_posts_property(self, server_mixin):
+        server_mixin.jira.post.return_value = self._created([self.INTERNAL_PROP])
+
+        result = server_mixin.add_comment("CC-1", "**note**", public=False)
+
+        call_args = server_mixin.jira.post.call_args
+        assert call_args[0][0] == "rest/api/2/issue/CC-1/comment"
+        assert call_args[1]["data"] == {
+            "body": "*note*",
+            "properties": [self.INTERNAL_PROP],
+        }
+        assert call_args[1]["params"] == {"expand": "properties"}
+        assert "servicedeskapi" not in str(call_args)
+        assert result["public"] is False
+        assert result["id"] == "42"
+
+    def test_public_comment_posts_internal_false(self, server_mixin):
+        server_mixin.jira.post.return_value = self._created(
+            [{"key": "sd.public.comment", "value": {"internal": False}}]
+        )
+
+        result = server_mixin.add_comment("TEST-1", "note", public=True)
+
+        data = server_mixin.jira.post.call_args[1]["data"]
+        assert data["properties"][0]["value"] == {"internal": False}
+        assert result["public"] is True
+
+    @pytest.mark.parametrize(
+        "properties",
+        [[], None, [{"key": "sd.public.comment", "value": {"internal": False}}]],
+    )
+    def test_internal_flag_not_confirmed_raises(self, server_mixin, properties):
+        """If Jira's answer lacks the internal flag, say so instead of
+        reporting success: the comment may be customer-visible."""
+        server_mixin.jira.post.return_value = self._created(properties)
+
+        with pytest.raises(Exception, match="may be customer-visible"):
+            server_mixin.add_comment("CC-1", "note", public=False)
+
+    def test_failure_never_reaches_plain_comment(self, server_mixin):
+        server_mixin.jira.post.side_effect = HTTPError(
+            "404", response=Mock(status_code=404)
+        )
+        server_mixin.jira.issue_add_comment = Mock()
+
+        with pytest.raises(Exception, match=r"HTTP 404"):
+            server_mixin.add_comment("CC-1", "note", public=False)
+
+        server_mixin.jira.post.assert_called_once()
+        server_mixin.jira.issue_add_comment.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("properties", "allowed"),
+        [
+            ([INTERNAL_PROP], True),
+            ([], False),
+            ([{"key": "sd.public.comment", "value": {"internal": False}}], False),
+            ([{"key": "sd.public.comment", "value": {"internal": "true"}}], False),
+            ([{"key": "other", "value": {"internal": True}}], False),
+        ],
+    )
+    def test_edit_guard_reads_property(self, server_mixin, properties, allowed):
+        server_mixin.jira.get.return_value = {"id": "5", "properties": properties}
+        server_mixin.jira.issue_edit_comment.return_value = {
+            "id": "5",
+            "body": "x",
+            "updated": "2024-01-01T10:00:00.000+0700",
+            "author": {"displayName": "Bot"},
+        }
+
+        if allowed:
+            server_mixin.edit_comment("CC-1", "5", "x")
+            server_mixin.jira.issue_edit_comment.assert_called_once()
+        else:
+            with pytest.raises(ValueError, match="PUBLIC"):
+                server_mixin.edit_comment("CC-1", "5", "x")
+            server_mixin.jira.issue_edit_comment.assert_not_called()
+
+        call_args = server_mixin.jira.get.call_args
+        assert call_args[0][0] == "rest/api/2/issue/CC-1/comment/5"
+        assert call_args[1]["params"] == {"expand": "properties"}
+
+    def test_edit_guard_lookup_failure_fails_closed(self, server_mixin):
+        server_mixin.jira.get.side_effect = Exception("500 Server Error")
+        with pytest.raises(Exception, match="Could not verify"):
+            server_mixin.edit_comment("CC-1", "5", "x")
+        server_mixin.jira.issue_edit_comment.assert_not_called()
+
+
 def _strong_text_nodes(adf: dict) -> list[str]:
     """Collect the text of every node carrying a `strong` mark in an ADF doc."""
     out: list[str] = []
